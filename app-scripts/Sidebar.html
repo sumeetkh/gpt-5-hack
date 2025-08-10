@@ -1,0 +1,268 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Contract Assistant</title>
+  <style>
+    :root { --gap: 6px; --radius: 10px; --fg:#222; --muted:#666; --bg:#fff; }
+    html,body { font-family: system-ui, -apple-system, Segoe UI, Arial, sans-serif; font-size: 13px; color: var(--fg); }
+    body { margin: 0; padding: 10px; }
+    * { box-sizing: border-box; }
+
+    #wrap, .card, .group, .patch, .row, .head, .content { max-width: 100%; }
+
+    .row { display:flex; gap:var(--gap); align-items:center; flex-wrap:wrap; }
+    .btn { padding: 4px 8px; border:0; border-radius:6px; cursor:pointer; font-size:12px; }
+    .primary { background:#0b67ff; color:#fff; }
+    .ghost { background:#eee; color:#111; }
+    .input { padding:4px 8px; border:1px solid #ddd; border-radius:6px; min-width:140px; max-width:100%; }
+
+    .card { background:var(--bg); border:1px solid #eee; border-radius:var(--radius); padding:8px; }
+    .small { font-size:12px; color:var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    #status { margin-left:auto; font-size:12px; color:var(--muted); }
+
+    #accordion { display:grid; gap:8px; }
+
+    .patch { padding:8px 10px; border:1px solid #eee; border-radius:8px; width:100%; }
+    .head { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; width:100%; }
+    /* Let the title wrap and take remaining space. Prevent horizontal scroll due to long words. */
+    .title {
+      font-weight:600;
+      flex:1 1 200px;
+      min-width:0;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+    }
+    .rationale { color:var(--muted); margin-top:2px; overflow-wrap:anywhere; word-break:break-word; }
+
+    .content {
+      margin-top:8px; padding:8px; background:#fafafa; border:1px solid #eee; border-radius:8px; width:100%;
+    }
+    .line { white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+
+    .state { padding:3px 8px; border-radius:999px; border:1px solid #e5e5e5; background:#f6f6f6; font-size:12px; white-space:nowrap; }
+    .state.pending{background:#f6f6f6;color:#333;}
+    .state.preview{background:#e2e3ff;color:#2f2aa0;border-color:#b8baf6;}
+    .state.applied{background:#d4edda;color:#0f5132;border-color:#a3d5b1;}
+
+    .right { display:flex; gap:6px; margin-left:auto; align-items:center; flex:0 0 auto; }
+    .split { position:relative; }
+    .dropdown { position:absolute; right:0; top:calc(100% + 4px); background:#fff; border:1px solid #e5e5e5; border-radius:6px; padding:4px; width: 140px; box-shadow:0 4px 12px rgba(0,0,0,.08); display:none; z-index:9; }
+    .dropdown button { width:100%; text-align:left; background:#fff; border:0; padding:6px; border-radius:4px; cursor:pointer; font-size:12px; }
+    .dropdown button:hover { background:#f6f9ff; }
+
+    /* Only Debug keeps its own scroll */
+    #debug { max-height: 120px; overflow:auto; background:#111; color:#b9f; padding:8px; border-radius:8px; }
+  </style>
+  <script>
+    if (google?.script?.host?.setWidth) {
+      try { google.script.host.setWidth(420); google.script.host.setHeight(1000); } catch(e){}
+    }
+  </script>
+</head>
+<body>
+<div id="wrap">
+  <div class="row" style="margin-bottom:8px;">
+    <button class="btn primary" id="btn-load">Load suggestions</button>
+    <input id="q" class="input" placeholder="Filter…">
+    <div id="status">Ready.</div>
+  </div>
+
+  <div id="preamble" class="card small" style="margin-bottom:8px;">Preamble will appear here.</div>
+  <div id="accordion"></div>
+
+  <div class="card" style="margin-top:8px;">
+    <details><summary>Debug</summary><pre id="debug" class="small mono"></pre></details>
+  </div>
+</div>
+
+<script type="module">
+async function rpc(name, ...args) {
+  return await new Promise((resolve, reject) => {
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[name](...args);
+  });
+}
+
+async function fetchPlanFromServer(serverUrl, docUrl, controlsText) {
+  const resp = await fetch(`${serverUrl}/plan/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      doc_url: docUrl,
+      controls_text: controlsText,
+      plan_id: "plan_demo_ui_001",
+      stream: false
+    })
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+  return await resp.json();
+}
+
+function escapeHTML(s){ return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+class Store {
+  constructor(){ this.plan=null; this.statuses={}; this.listeners=new Set(); }
+  subscribe(fn){ this.listeners.add(fn); return ()=>this.listeners.delete(fn); }
+  emit(){ this.listeners.forEach(fn=>fn(this)); }
+  loadPlan(plan){
+    this.plan = plan;
+    this.statuses = Object.fromEntries((plan.patches || []).map(p => [p.id, 'pending']));
+    this.emit();
+  }
+  setStatus(id, s){ this.statuses[id]=s; this.emit(); }
+}
+
+class View {
+  constructor(store){
+    this.store = store;
+    this.$status = document.getElementById('status');
+    this.$preamble = document.getElementById('preamble');
+    this.$accordion = document.getElementById('accordion');
+    this.$debug = document.getElementById('debug');
+
+    document.getElementById('btn-load').addEventListener('click', ()=> this.loadFromServer());
+    this.store.subscribe(()=> this.render());
+  }
+
+  setStatus(s){ this.$status.textContent = s; }
+  log(...args){
+    const line=args.map(a=>{try{return typeof a==='string'?a:JSON.stringify(a)}catch{return String(a)}}).join(' ');
+    this.$debug.textContent+=line+'\n'; this.$debug.scrollTop=this.$debug.scrollHeight;
+  }
+
+  async loadFromServer(){
+    this.setStatus('Getting config…');
+    try {
+      const cfg = await rpc('getConfig');
+      const useMock = !!cfg.USE_MOCK;
+      const docUrl = cfg.DOC_URL;
+      const serverUrl = cfg.SERVER_URL;
+
+      this.setStatus(useMock ? 'Loading mock plan…' : 'Loading from server…');
+
+      const controlsText = `Tier: Enterprise
+Domain: Finance
+Jurisdiction: Germany
+Residency: EU
+UptimeTarget: 99.5%
+SupportModel: 24x7
+CreditsApplyToPS: Yes
+BreachNoticeHours: 24
+CSMName: Jane Smith`;
+
+      const plan = useMock
+        ? await rpc('getMockPlan')
+        : await fetchPlanFromServer(serverUrl, docUrl, controlsText);
+
+      this.store.loadPlan(plan);
+      this.renderPreamble();
+      this.setStatus('Loaded.');
+    } catch (e) {
+      this.log('loadFromServer error', e);
+      alert(`Error: ${e.message || e}`);
+      this.setStatus('Error loading data.');
+    }
+  }
+
+  renderPreamble(){
+    const p = this.store.plan?.preamble || {};
+    this.$preamble.innerHTML = `
+      <div><b>Decision brief</b></div>
+      <div class="small"><b>Summary:</b> ${escapeHTML(p.summary || '—')}</div>
+      ${p.considerations?.length ? `<div class="small" style="margin-top:4px;"><b>Considerations:</b> ${p.considerations.map(escapeHTML).join(' · ')}</div>`:''}
+    `;
+  }
+
+  render(){
+    if(!this.store.plan){ this.$accordion.innerHTML = `<div class="card small">No plan loaded.</div>`; return; }
+    const patches = this.store.plan.patches || [];
+    let html = '';
+    patches.forEach(p => {
+      const st = this.store.statuses[p.id] || 'pending';
+      html += `
+        <div class="patch" data-id="${escapeHTML(p.id)}">
+          <div class="head">
+            <div class="title">${escapeHTML(p.section || '')}</div>
+            <div class="right">
+              <span class="state ${st}">${st}</span>
+              <div class="split">
+                <button class="btn ghost" data-act="toggleMenu" data-id="${escapeHTML(p.id)}">Actions ▼</button>
+                <div class="dropdown" id="menu-${escapeHTML(p.id)}">
+                  <button data-act="preview" data-id="${escapeHTML(p.id)}">Preview</button>
+                  <button data-act="apply" data-id="${escapeHTML(p.id)}">Apply</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="rationale">${escapeHTML(p.rationale || '')}</div>
+          <div class="content">
+            <div class="small mono">orig:</div>
+            <div class="line mono">${escapeHTML(p.orig_text || '')}</div>
+            <div class="small mono" style="margin-top:6px;">replace →</div>
+            <div class="line mono">${escapeHTML(p.replace_text || '')}</div>
+          </div>
+        </div>`;
+    });
+    this.$accordion.innerHTML = html;
+
+    // wire actions
+    this.$accordion.querySelectorAll('[data-act="toggleMenu"]').forEach(btn=>{
+      btn.addEventListener('click', ()=> this.toggleMenu(btn));
+    });
+    this.$accordion.querySelectorAll('[data-act="preview"]').forEach(btn=>{
+      btn.addEventListener('click', ()=> this.preview(btn.dataset.id));
+    });
+    this.$accordion.querySelectorAll('[data-act="apply"]').forEach(btn=>{
+      btn.addEventListener('click', ()=> this.apply(btn.dataset.id));
+    });
+  }
+
+  toggleMenu(btn){
+    const menu = document.getElementById(`menu-${btn.dataset.id}`);
+    const open = menu.style.display === 'block';
+    document.querySelectorAll('.dropdown').forEach(m => m.style.display='none');
+    menu.style.display = open ? 'none' : 'block';
+    if (!open) {
+      const onDoc = (e) => {
+        if (!menu.contains(e.target) && e.target !== btn) {
+          menu.style.display='none';
+          document.removeEventListener('click', onDoc);
+        }
+      };
+      document.addEventListener('click', onDoc);
+    }
+  }
+
+  async preview(patchId){
+    const p = this.store.plan.patches.find(x=>x.id===patchId);
+    if (!p) return;
+    this.setStatus(`Previewing ${patchId}…`);
+    try {
+      const res = await rpc('previewPatchByText', p);
+      if (!res?.ok) { alert(res?.reason || 'Preview failed'); return; }
+      this.store.setStatus(patchId,'preview');
+    } catch(e){ this.log('preview error', e); alert(e.message||e); }
+    finally { this.setStatus('Ready.'); }
+  }
+
+  async apply(patchId){
+    const p = this.store.plan.patches.find(x=>x.id===patchId);
+    if (!p) return;
+    this.setStatus(`Applying ${patchId}…`);
+    try {
+      const res = await rpc('applyPatchByText', p);
+      if (!res?.ok) { alert(res?.reason || 'Apply failed'); return; }
+      this.store.setStatus(patchId,'applied');
+    } catch(e){ this.log('apply error', e); alert(e.message||e); }
+    finally { this.setStatus('Ready.'); }
+  }
+}
+
+const store = new Store();
+const view  = new View(store);
+</script>
+</body>
+</html>
+

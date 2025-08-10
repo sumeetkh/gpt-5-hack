@@ -1,0 +1,2 @@
+Agent accepts a document. Reads the contract, and suggests changes.
+App scripts contain the script that show up as a sidebar in Google Docs and enable inline editing flow.

@@ -1,0 +1,18 @@
+openai>=1.43.0
+httpx>=0.24,<0.28
+rich>=13.3.0
+requests>=2.31.0
+
+# Google APIs (Drive/Docs via discovery client + OAuth)
+google-api-python-client>=2.111.0
+google-auth>=2.22.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.2.0
+httplib2>=0.22.0
+
+# Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# Models / Validation
+pydantic>=2.6.0

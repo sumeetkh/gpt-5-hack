@@ -1,0 +1,13 @@
+{
+  "effective_date": "YYYY-MM-DD",
+  "term_length": "3 years",
+  "termination_notice_days": 60,
+  "governing_law": "State of California",
+  "uptime_commitment": "99.95%",
+  "monthly_fee_per_region": 5000,
+  "regions": ["US-East", "EU-West"],
+  "security_breach_notification_hours": 24,
+  "liability_cap": "12 months of fees",
+  "ip_ownership_model": "Customer owns deliverables, provider retains background IP"
+}
+
