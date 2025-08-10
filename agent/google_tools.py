@@ -296,3 +296,4 @@ if __name__ == "__main__":
     # Example usage (set GOOGLE_CLIENT_SECRET_FILE or GOOGLE_CLIENT_SECRET_JSON and GOOGLE_TOKEN_PATH first):
     # url = "https://docs.google.com/document/d/.../edit"
     # print(fetch_google_url_private(url))
+    pass
